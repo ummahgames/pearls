@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Doubloon Disaster – Physics Sandbox (Tank Controls + Homing Mines)</title>
+  <style>
+    html, body { height: 100%; margin: 0; background:#0b1b2b; color:#e9f2ff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .wrap { display:grid; place-items:center; gap:12px; padding:18px; }
+    canvas { background: radial-gradient(1200px 600px at 50% 20%, #0f2e4a, #07131f 70%); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+    .hud { display:flex; gap:18px; font-weight:600; align-items:center; flex-wrap:wrap; }
+    .btn { cursor:pointer; background:#133455; color:#e9f2ff; border:1px solid #1e4d7a; padding:8px 12px; border-radius:8px; font-weight:700; }
+    .btn:active { transform: translateY(1px); }
+    .muted { opacity:.85; font-weight:500; }
+    a { color:#8bd0ff; }
+    .pill { background:#143b60; border:1px solid #215682; padding:2px 8px; border-radius:999px; font-weight:700; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hud">
+      <div>Score: <span id="score" class="pill">0</span></div>
+      <div>Multiplier: <span id="mult" class="pill">1×</span> <span class="muted" id="chainHint"></span></div>
+      <div>Mines: <span id="mineCount" class="pill">0</span></div>
+      <div class="muted">Controls: ←/→ rotate, ↑ forward, ↓ reverse, Space restart</div>
+      <button id="reset" class="btn" title="Space to quick-restart">Restart ▸</button>
+    </div>
+    <canvas id="game" width="900" height="600"></canvas>
+    <div class="muted">Herd mines together so they collide and explode. Mines wander slowly but will home in when near the boat.</div>
+  </div>
+
+  <script>
+  // Doubloon Disaster–style sandbox (revised):
+  // - Tank/boat controls: left/right rotate; up/down thrust in facing direction
+  // - Mines wander slowly; if within aggro radius of the boat they accelerate toward it
+  // - Mine–mine collisions cause explosions (remove both), rewarding points and spawning a bonus coin
+
+  const canvas = document.getElementById('game');
+  const c = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  // --------- Game state ---------
+  let boat, mines, coins, explosions, running, score, chainMult, chainTimer, chainWindow, spawnTimers;
+  let time = 0; // ms
+
+  // Tunables
+  const TUNE = {
+    // Boat
+    boatRadius: 14,
+    boatAccel: 0.28,       // thrust per frame (applied to facing)
+    boatTurnSpeed: 0.055,  // radians per frame when holding left/right
+    boatFriction: 0.985,   // linear velocity damping
+    boatMaxSpeed: 5.4,
+
+    // Mines
+    mineRadius: 13,
+    mineWanderAccel: 0.015,   // random drift accel (slower)
+    mineWanderDrag: 0.996,   // keeps them from speeding up from wander
+    mineBaseMax: 0.9,
+    mineSeekAccel: 0.03,     // gentler accel toward boat when aggroed
+    mineSeekMax: 4.8,        // cap speed under seeking (slower than boat)
+    mineAggroRadius: 170,    // distance at which mines start homing
+    mineStartCount: 2,
+    mineMaxCount: 24,
+    // mineAddEverySec removed – mines only spawn when you collect a coin
+
+    // Coins / scoring
+    coinRadius: 8,
+    coinSpawnEvery: 1400,    // ms
+    coinSafeRadiusFromBoat: 120,
+    chainWindowMs: 2200,
+    chainMax: 10,
+    coinValue: 1,
+    explosionCoinValue: 5,   // bonus when mines collide
+
+    // FX
+    explosionLife: 450,      // ms
+
+    // loop
+    dt: 1000/60,
+  };
+
+  // Input
+  const keys = new Set();
+  addEventListener('keydown', e => {
+    if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," ","Space"].includes(e.key)) e.preventDefault();
+    if (e.key === ' ') restart();
+    keys.add(e.key.toLowerCase());
+  });
+  addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+  document.getElementById('reset').onclick = () => restart();
+
+  function rand(a,b){ return a + Math.random()*(b-a); }
+  function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
+
+  function init(){
+    running = true;
+    score = 0;
+    chainMult = 1;
+    chainTimer = 0;
+    chainWindow = TUNE.chainWindowMs;
+
+    boat = { x: W*0.5, y: H*0.8, vx:0, vy:0, ang: -Math.PI/2, r:TUNE.boatRadius };
+
+    mines = [];
+    for (let i=0;i<TUNE.mineStartCount;i++) mines.push(newMine());
+
+    coins = [];
+    explosions = [];
+    spawnTimers = { coin: 0 };
+    time = 0;
+  }
+
+  function newMine(){
+    // Spawn away from boat
+    let x, y; let tries = 0;
+    do { x = rand(50, W-50); y = rand(50, H-50); tries++; } while (dist2(x,y,boat.x,boat.y) < 160*160 && tries < 50);
+    // Small random initial velocity
+    const ang = rand(0, Math.PI*2);
+    const spd = rand(0.2, 0.8);
+    return { x, y, vx: Math.cos(ang)*spd, vy: Math.sin(ang)*spd, r:TUNE.mineRadius };
+  }
+
+  function newCoinAt(x,y){ return { x, y, r: TUNE.coinRadius }; }
+  function newCoin(){
+    let x, y; let tries = 0;
+    do { x = rand(30, W-30); y = rand(30, H-30); tries++; } while (dist2(x,y,boat.x,boat.y) < TUNE.coinSafeRadiusFromBoat**2 && tries < 50);
+    return newCoinAt(x,y);
+  }
+
+  function dist2(x1,y1,x2,y2){ const dx=x1-x2, dy=y1-y2; return dx*dx+dy*dy; }
+  function circleHit(a,b){ const r = a.r + b.r; return dist2(a.x,a.y,b.x,b.y) <= r*r; }
+
+  function addExplosion(x,y){
+    explosions.push({ x,y, t:TUNE.explosionLife });
+  }
+
+  function physicsStep(dt){
+    if (!running) return;
+
+    // --- Input → rotation + thrust (tank controls)
+    const up = keys.has('arrowup') || keys.has('w');
+    const dn = keys.has('arrowdown') || keys.has('s');
+    const lf = keys.has('arrowleft') || keys.has('a');
+    const rt = keys.has('arrowright') || keys.has('d');
+
+    if (lf) boat.ang -= TUNE.boatTurnSpeed;
+    if (rt) boat.ang += TUNE.boatTurnSpeed;
+
+    const fx = Math.cos(boat.ang);
+    const fy = Math.sin(boat.ang);
+    if (up) { boat.vx += fx * TUNE.boatAccel; boat.vy += fy * TUNE.boatAccel; }
+    if (dn) { boat.vx -= fx * (TUNE.boatAccel*0.7); boat.vy -= fy * (TUNE.boatAccel*0.7); }
+
+    // Friction + clamp speed
+    boat.vx *= TUNE.boatFriction;
+    boat.vy *= TUNE.boatFriction;
+    const spd = Math.hypot(boat.vx, boat.vy);
+    if (spd > TUNE.boatMaxSpeed){ const k=TUNE.boatMaxSpeed/spd; boat.vx*=k; boat.vy*=k; }
+
+    // Integrate position and clamp
+    boat.x = clamp(boat.x + boat.vx, boat.r, W-boat.r);
+    boat.y = clamp(boat.y + boat.vy, boat.r, H-boat.r);
+
+    // --- Mines: wander + conditional homing, wall bounce, collisions
+    for (const m of mines){
+      // Wander: small random acceleration
+      m.vx += rand(-TUNE.mineWanderAccel, TUNE.mineWanderAccel);
+      m.vy += rand(-TUNE.mineWanderAccel, TUNE.mineWanderAccel);
+
+      // If within aggro radius, accelerate toward boat
+      const d2 = dist2(m.x,m.y,boat.x,boat.y);
+      if (d2 < TUNE.mineAggroRadius*TUNE.mineAggroRadius){
+        const d = Math.sqrt(d2) || 1;
+        const ax = (boat.x - m.x)/d * TUNE.mineSeekAccel;
+        const ay = (boat.y - m.y)/d * TUNE.mineSeekAccel;
+        m.vx += ax; m.vy += ay;
+        // Cap speed while seeking
+        const ms = Math.hypot(m.vx, m.vy);
+        if (ms > TUNE.mineSeekMax){ const k=TUNE.mineSeekMax/ms; m.vx*=k; m.vy*=k; }
+      } else {
+        // Damp so wandering stays slow
+        m.vx *= TUNE.mineWanderDrag; m.vy *= TUNE.mineWanderDrag;
+        const ms = Math.hypot(m.vx, m.vy);
+        if (ms > TUNE.mineBaseMax){ const k=TUNE.mineBaseMax/ms; m.vx*=k; m.vy*=k; }
+      }
+
+      // Integrate + wall bounce
+      m.x += m.vx; m.y += m.vy;
+      if (m.x < m.r){ m.x = m.r; m.vx *= -1; }
+      if (m.x > W-m.r){ m.x = W-m.r; m.vx *= -1; }
+      if (m.y < m.r){ m.y = m.r; m.vy *= -1; }
+      if (m.y > H-m.r){ m.y = H-m.r; m.vy *= -1; }
+
+      // Boat collision → game over
+      if (circleHit(boat, m)) running = false;
+    }
+
+    // Mine–mine collisions → explode (remove both), spawn coin, score bonus
+    for (let i=0;i<mines.length;i++){
+      for (let j=i+1;j<mines.length;j++){
+        const a=mines[i], b=mines[j];
+        if (!a || !b) continue;
+        const rr = (a.r + b.r);
+        if (dist2(a.x,a.y,b.x,b.y) <= rr*rr){
+          // Explosion at midpoint
+          const ex = (a.x + b.x)/2, ey = (a.y + b.y)/2;
+          addExplosion(ex,ey);
+          // Remove b then a (higher index first)
+          mines.splice(j,1); mines.splice(i,1);
+          // Score + bonus coin spawn
+          score += TUNE.explosionCoinValue * chainMult;
+          coins.push(newCoinAt(ex + rand(-10,10), ey + rand(-10,10)));
+          // Adjust indices
+          i--; break;
+        }
+      }
+    }
+
+    // Coin collection + chain
+    for (let i = coins.length-1; i >= 0; i--){
+      if (circleHit(boat, coins[i])){
+        coins.splice(i,1);
+        chainMult = Math.min(TUNE.chainMax, chainMult + 1);
+        chainTimer = chainWindow;
+        score += TUNE.coinValue * chainMult;
+        // Spawn a new mine only when a coin is collected
+        if (mines.length < TUNE.mineMaxCount) mines.push(newMine());
+      }
+    }
+
+    // Chain timer decay
+    if (chainTimer > 0){
+      chainTimer -= dt; if (chainTimer <= 0){ chainTimer = 0; chainMult = 1; }
+    }
+
+    // Spawning cadence
+    spawnTimers.coin += dt;
+    if (spawnTimers.coin >= TUNE.coinSpawnEvery){ spawnTimers.coin = 0; coins.push(newCoin()); }
+    
+
+    // Explosions decay
+    for (let i=explosions.length-1;i>=0;i--){
+      explosions[i].t -= dt; if (explosions[i].t <= 0) explosions.splice(i,1);
+    }
+
+    // HUD
+    document.getElementById('score').textContent = score;
+    document.getElementById('mult').textContent = chainMult + '×';
+    const hint = document.getElementById('chainHint');
+    hint.textContent = chainMult>1 ? ` (chain ${Math.ceil(chainTimer/1000)}s)` : '';
+    document.getElementById('mineCount').textContent = mines.length;
+  }
+
+  function draw(){
+    c.clearRect(0,0,W,H);
+
+    // Coins
+    for (const coin of coins){
+      c.beginPath(); c.arc(coin.x, coin.y, coin.r, 0, Math.PI*2);
+      c.fillStyle = '#ffd24a'; c.fill();
+      c.lineWidth = 2; c.strokeStyle = '#9c6e00'; c.stroke();
+      c.beginPath(); c.arc(coin.x-3, coin.y-3, coin.r*0.35, 0, Math.PI*2);
+      c.fillStyle = 'rgba(255,255,255,0.45)'; c.fill();
+    }
+
+    // Mines
+    for (const m of mines){
+      c.beginPath(); c.arc(m.x, m.y, m.r, 0, Math.PI*2);
+      c.fillStyle = '#2a3747'; c.fill();
+      c.lineWidth = 2; c.strokeStyle = '#a9bfd6'; c.stroke();
+      for (let i=0;i<8;i++){ const ang = (i/8)*Math.PI*2; const x1 = m.x + Math.cos(ang)*m.r; const y1 = m.y + Math.sin(ang)*m.r; const x2 = m.x + Math.cos(ang)*(m.r+6); const y2 = m.y + Math.sin(ang)*(m.r+6); c.beginPath(); c.moveTo(x1,y1); c.lineTo(x2,y2); c.strokeStyle = '#7f93a8'; c.stroke(); }
+    }
+
+    // Explosions (simple expanding rings)
+    for (const e of explosions){
+      const p = 1 - (e.t / TUNE.explosionLife);
+      const R = 12 + p*26;
+      c.beginPath(); c.arc(e.x, e.y, R, 0, Math.PI*2);
+      c.strokeStyle = `rgba(255,230,160,${1-p})`; c.lineWidth = 3; c.stroke();
+      c.beginPath(); c.arc(e.x, e.y, R*0.6, 0, Math.PI*2);
+      c.strokeStyle = `rgba(255,180,80,${0.8*(1-p)})`; c.lineWidth = 2; c.stroke();
+    }
+
+    // Boat
+    c.save();
+    c.translate(boat.x, boat.y); c.rotate(boat.ang);
+    // Hull
+    c.fillStyle = '#69aadb';
+    c.beginPath(); c.ellipse(0,0, boat.r+6, boat.r, 0, 0, Math.PI*2); c.fill();
+    c.lineWidth = 2; c.strokeStyle = '#e1f1ff'; c.stroke();
+    // Bow
+    c.beginPath(); c.moveTo(boat.r+6,0); c.lineTo(boat.r-2, -6); c.lineTo(boat.r-2, 6); c.closePath(); c.fillStyle = '#3f87bd'; c.fill();
+    c.restore();
+
+    if (!running){
+      c.fillStyle = 'rgba(0,0,0,0.55)'; c.fillRect(0,0,W,H);
+      c.fillStyle = '#e9f2ff'; c.font = '700 36px system-ui, sans-serif'; c.textAlign = 'center';
+      c.fillText('Game Over', W/2, H/2 - 14);
+      c.font = '500 18px system-ui, sans-serif'; c.fillText('Press Space to Restart', W/2, H/2 + 18);
+    }
+  }
+
+  function loop(ts){
+    if (!loop.last) loop.last = ts; let dt = ts - loop.last; loop.last = ts; time += dt;
+    loop.acc = (loop.acc || 0) + dt;
+    while (loop.acc >= TUNE.dt){ physicsStep(TUNE.dt); loop.acc -= TUNE.dt; }
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function restart(){ init(); }
+
+  // Boot
+  init();
+  requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
