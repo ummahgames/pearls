@@ -77,8 +77,8 @@
     // Environmental effects
     envEffectSpawnEvery: 12000,  // ms between environmental effects
     envEffectDuration: 6000,     // ms how long effects last
-    envEffectRadius: 120,        // radius of effect
-    envEffectStrength: 0.8,      // how strong the effect is
+    envEffectRadius: 180,        // radius of effect (increased from 120)
+    envEffectStrength: 1.5,      // how strong the effect is (increased from 0.8)
 
     // FX
     explosionLife: 450,      // ms
@@ -272,6 +272,80 @@
     }
     
 
+    // Environmental effects decay and physics
+    for (let i=environmentalEffects.length-1;i>=0;i--){
+      const effect = environmentalEffects[i];
+      effect.t -= dt; 
+      if (effect.t <= 0) {
+        environmentalEffects.splice(i,1);
+        continue;
+      }
+
+      // Apply environmental effects to boat and mines
+      const effectProgress = 1 - (effect.t / TUNE.envEffectDuration);
+      const currentStrength = effect.strength * (0.5 + 0.5 * Math.sin(effectProgress * Math.PI)); // fade in/out
+
+      // Boat effects
+      const boatDist = Math.sqrt(dist2(boat.x, boat.y, effect.x, effect.y));
+      if (boatDist < effect.r) {
+        const influence = (effect.r - boatDist) / effect.r;
+        const force = currentStrength * influence * 0.02;
+
+        if (effect.type === 'maelstrom') {
+          // Pull toward center
+          const dx = (effect.x - boat.x) / boatDist;
+          const dy = (effect.y - boat.y) / boatDist;
+          boat.vx += dx * force;
+          boat.vy += dy * force;
+        } else if (effect.type === 'whirlpool') {
+          // Circular motion
+          const perpX = -(boat.y - effect.y) / boatDist;
+          const perpY = (boat.x - effect.x) / boatDist;
+          boat.vx += perpX * force;
+          boat.vy += perpY * force;
+        } else if (effect.type === 'wind') {
+          // Push in wind direction
+          boat.vx += Math.cos(effect.angle) * force;
+          boat.vy += Math.sin(effect.angle) * force;
+        } else if (effect.type === 'wave') {
+          // Push away from center
+          const dx = (boat.x - effect.x) / boatDist;
+          const dy = (boat.y - effect.y) / boatDist;
+          boat.vx += dx * force;
+          boat.vy += dy * force;
+        }
+      }
+
+      // Mine effects (same logic but weaker)
+      for (const m of mines) {
+        const mineDist = Math.sqrt(dist2(m.x, m.y, effect.x, effect.y));
+        if (mineDist < effect.r) {
+          const influence = (effect.r - mineDist) / effect.r;
+          const force = currentStrength * influence * 0.01; // weaker for mines
+
+          if (effect.type === 'maelstrom') {
+            const dx = (effect.x - m.x) / mineDist;
+            const dy = (effect.y - m.y) / mineDist;
+            m.vx += dx * force;
+            m.vy += dy * force;
+          } else if (effect.type === 'whirlpool') {
+            const perpX = -(m.y - effect.y) / mineDist;
+            const perpY = (m.x - effect.x) / mineDist;
+            m.vx += perpX * force;
+            m.vy += perpY * force;
+          } else if (effect.type === 'wind') {
+            m.vx += Math.cos(effect.angle) * force;
+            m.vy += Math.sin(effect.angle) * force;
+          } else if (effect.type === 'wave') {
+            const dx = (m.x - effect.x) / mineDist;
+            const dy = (m.y - effect.y) / mineDist;
+            m.vx += dx * force;
+            m.vy += dy * force;
+          }
+        }
+      }
+    }
+
     // Explosions decay
     for (let i=explosions.length-1;i>=0;i--){
       explosions[i].t -= dt; if (explosions[i].t <= 0) explosions.splice(i,1);
@@ -459,6 +533,82 @@
       c.fillStyle = 'rgba(255,255,255,0.6)';
       c.fill();
       c.restore();
+
+      c.restore();
+    }
+
+    // Environmental effects
+    for (const effect of environmentalEffects) {
+      const progress = 1 - (effect.t / TUNE.envEffectDuration);
+      const alpha = 0.3 + 0.4 * Math.sin(progress * Math.PI); // fade in/out
+      const pulse = 0.8 + 0.2 * Math.sin(time * 0.003 + effect.x * 0.01);
+
+      c.save();
+      c.globalAlpha = alpha;
+
+      if (effect.type === 'maelstrom') {
+        // Dark swirling vortex
+        c.beginPath();
+        c.arc(effect.x, effect.y, effect.r * pulse, 0, Math.PI * 2);
+        c.strokeStyle = `rgba(100,50,150,${alpha})`;
+        c.lineWidth = 4;
+        c.stroke();
+        
+        // Inner spiral
+        for (let i = 0; i < 3; i++) {
+          c.beginPath();
+          const spiralR = effect.r * (0.3 + 0.4 * i / 3) * pulse;
+          const spiralAngle = time * 0.002 + i * Math.PI * 2 / 3;
+          c.arc(effect.x, effect.y, spiralR, spiralAngle, spiralAngle + Math.PI * 1.5);
+          c.strokeStyle = `rgba(150,100,200,${alpha * 0.6})`;
+          c.lineWidth = 2;
+          c.stroke();
+        }
+      } else if (effect.type === 'whirlpool') {
+        // Blue swirling water
+        c.beginPath();
+        c.arc(effect.x, effect.y, effect.r * pulse, 0, Math.PI * 2);
+        c.strokeStyle = `rgba(50,100,200,${alpha})`;
+        c.lineWidth = 3;
+        c.stroke();
+        
+        // Concentric circles
+        for (let i = 1; i <= 3; i++) {
+          c.beginPath();
+          c.arc(effect.x, effect.y, effect.r * (i / 4) * pulse, 0, Math.PI * 2);
+          c.strokeStyle = `rgba(80,150,255,${alpha * 0.4})`;
+          c.lineWidth = 1.5;
+          c.stroke();
+        }
+      } else if (effect.type === 'wind') {
+        // Invisible but show direction with arrows
+        const arrowCount = 8;
+        for (let i = 0; i < arrowCount; i++) {
+          const angle = (i / arrowCount) * Math.PI * 2;
+          const dist = effect.r * (0.3 + 0.4 * Math.random()) * pulse;
+          const ax = effect.x + Math.cos(angle) * dist;
+          const ay = effect.y + Math.sin(angle) * dist;
+          
+          c.beginPath();
+          c.moveTo(ax, ay);
+          c.lineTo(ax + Math.cos(effect.angle) * 15, ay + Math.sin(effect.angle) * 15);
+          c.strokeStyle = `rgba(200,200,255,${alpha * 0.6})`;
+          c.lineWidth = 2;
+          c.stroke();
+        }
+      } else if (effect.type === 'wave') {
+        // Expanding wave rings
+        const ringCount = 3;
+        for (let i = 0; i < ringCount; i++) {
+          const ringProgress = (progress + i * 0.3) % 1;
+          const ringR = effect.r * ringProgress * pulse;
+          c.beginPath();
+          c.arc(effect.x, effect.y, ringR, 0, Math.PI * 2);
+          c.strokeStyle = `rgba(100,150,255,${alpha * (1 - ringProgress)})`;
+          c.lineWidth = 3 - ringProgress * 2;
+          c.stroke();
+        }
+      }
 
       c.restore();
     }
