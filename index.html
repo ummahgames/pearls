@@ -40,7 +40,7 @@
   const W = canvas.width, H = canvas.height;
 
   // --------- Game state ---------
-  let boat, mines, coins, explosions, running, score, chainMult, chainTimer, chainWindow, spawnTimers;
+  let boat, mines, coins, explosions, running, score, chainMult, chainTimer, chainWindow, spawnTimers, environmentalEffects;
   let time = 0; // ms
 
   // Tunables
@@ -64,14 +64,21 @@
     mineMaxCount: 24,
     // mineAddEverySec removed – mines only spawn when you collect a coin
 
-    // Coins / scoring
+    // Pearls / scoring
     coinRadius: 8,
-    coinSpawnEvery: 1400,    // ms
+    coinSpawnEvery: 8000,    // ms - much slower spawn rate
+    coinMaxCount: 2,         // maximum pearls at once
     coinSafeRadiusFromBoat: 120,
     chainWindowMs: 2200,
     chainMax: 10,
     coinValue: 1,
     explosionCoinValue: 5,   // bonus when mines collide
+
+    // Environmental effects
+    envEffectSpawnEvery: 12000,  // ms between environmental effects
+    envEffectDuration: 6000,     // ms how long effects last
+    envEffectRadius: 120,        // radius of effect
+    envEffectStrength: 0.8,      // how strong the effect is
 
     // FX
     explosionLife: 450,      // ms
@@ -107,7 +114,8 @@
 
     coins = [];
     explosions = [];
-    spawnTimers = { coin: 0 };
+    environmentalEffects = [];
+    spawnTimers = { coin: 0, envEffect: 0 };
     time = 0;
   }
 
@@ -133,6 +141,21 @@
 
   function addExplosion(x,y){
     explosions.push({ x,y, t:TUNE.explosionLife });
+  }
+
+  function newEnvironmentalEffect(){
+    const types = ['maelstrom', 'whirlpool', 'wind', 'wave'];
+    const type = types[Math.floor(Math.random() * types.length)];
+    let x, y; let tries = 0;
+    do { x = rand(100, W-100); y = rand(100, H-100); tries++; } while (dist2(x,y,boat.x,boat.y) < 200*200 && tries < 50);
+    return { 
+      x, y, 
+      type, 
+      t: TUNE.envEffectDuration,
+      r: TUNE.envEffectRadius,
+      strength: TUNE.envEffectStrength,
+      angle: rand(0, Math.PI*2) // for directional effects like wind
+    };
   }
 
   function physicsStep(dt){
@@ -236,7 +259,17 @@
 
     // Spawning cadence
     spawnTimers.coin += dt;
-    if (spawnTimers.coin >= TUNE.coinSpawnEvery){ spawnTimers.coin = 0; coins.push(newCoin()); }
+    if (spawnTimers.coin >= TUNE.coinSpawnEvery && coins.length < TUNE.coinMaxCount){ 
+      spawnTimers.coin = 0; 
+      coins.push(newCoin()); 
+    }
+
+    // Environmental effects spawning
+    spawnTimers.envEffect += dt;
+    if (spawnTimers.envEffect >= TUNE.envEffectSpawnEvery){ 
+      spawnTimers.envEffect = 0; 
+      environmentalEffects.push(newEnvironmentalEffect()); 
+    }
     
 
     // Explosions decay
@@ -255,21 +288,179 @@
   function draw(){
     c.clearRect(0,0,W,H);
 
-    // Coins
-    for (const coin of coins){
-      c.beginPath(); c.arc(coin.x, coin.y, coin.r, 0, Math.PI*2);
-      c.fillStyle = '#ffd24a'; c.fill();
-      c.lineWidth = 2; c.strokeStyle = '#9c6e00'; c.stroke();
-      c.beginPath(); c.arc(coin.x-3, coin.y-3, coin.r*0.35, 0, Math.PI*2);
-      c.fillStyle = 'rgba(255,255,255,0.45)'; c.fill();
+    // ─────────────────────────────────────────────────────────────────────────────
+    // PEARLS (replaces your // Coins loop)
+    // ─────────────────────────────────────────────────────────────────────────────
+    for (const coin of coins) {
+      c.save();
+
+      // deterministic "random" from position for consistent variety
+      const fract = v => v - Math.floor(v);
+      const seed = fract(Math.sin(coin.x * 12.9898 + coin.y * 78.233) * 43758.5453);
+
+      // 12% chance: rare colored pearls
+      const rare = seed < 0.12;
+      // pick a rare tint bucket
+      let tint; // {h,s,l} for hsl
+      if (rare) {
+        if (seed < 0.03)      tint = { h: 205, s: 35, l: 28, kind: 'black'   }; // black/peacock-dark
+        else if (seed < 0.06) tint = { h: 335, s: 45, l: 72, kind: 'rose'    }; // rose
+        else if (seed < 0.09) tint = { h: 260, s: 35, l: 78, kind: 'lavender'}; // lavender
+        else                  tint = { h: 45,  s: 65, l: 70, kind: 'golden'  }; // golden
+      } else {
+        tint = { h: 30, s: 18, l: 92, kind: 'classic' }; // warm ivory
+      }
+
+      // pearl body with iridescent radial gradient
+      const r = coin.r;
+      const gx = coin.x - r * 0.35, gy = coin.y - r * 0.35;
+      const body = c.createRadialGradient(gx, gy, r * 0.15, coin.x, coin.y, r);
+      if (tint.kind === 'black') {
+        body.addColorStop(0.00, 'rgba(255,255,255,0.85)');
+        body.addColorStop(0.35, `hsl(${tint.h} ${tint.s}% ${Math.max(20, tint.l - 8)}%)`);
+        body.addColorStop(0.70, `hsl(${(tint.h+30)%360} ${Math.max(20, tint.s-10)}% ${Math.max(12, tint.l-18)}%)`);
+        body.addColorStop(1.00, 'rgba(0,0,0,0.55)');
+      } else {
+        body.addColorStop(0.00, 'rgba(255,255,255,0.95)');
+        body.addColorStop(0.35, `hsl(${tint.h} ${tint.s}% ${tint.l}%)`);
+        body.addColorStop(0.70, `hsl(${(tint.h+40)%360} ${Math.max(10, tint.s-12)}% ${Math.max(70, tint.l-8)}%)`);
+        body.addColorStop(1.00, 'rgba(60,60,60,0.15)');
+      }
+
+      // base sphere
+      c.beginPath();
+      c.arc(coin.x, coin.y, r, 0, Math.PI * 2);
+      c.fillStyle = body;
+      c.fill();
+
+      // thin rim sheen
+      c.lineWidth = 1;
+      c.strokeStyle = 'rgba(255,255,255,0.35)';
+      c.stroke();
+
+      // specular highlight
+      c.beginPath();
+      c.ellipse(coin.x - r * 0.38, coin.y - r * 0.38, r * 0.35, r * 0.22, Math.PI / 6, 0, Math.PI * 2);
+      c.fillStyle = 'rgba(255,255,255,0.55)';
+      c.fill();
+
+      // faint interference band for iridescence
+      c.beginPath();
+      c.ellipse(coin.x + r * 0.10, coin.y + r * 0.05, r * 0.85, r * 0.55, -Math.PI / 8, 0, Math.PI * 2);
+      c.strokeStyle = rare ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.06)';
+      c.lineWidth = 1;
+      c.stroke();
+
+      c.restore();
     }
 
-    // Mines
-    for (const m of mines){
-      c.beginPath(); c.arc(m.x, m.y, m.r, 0, Math.PI*2);
-      c.fillStyle = '#2a3747'; c.fill();
-      c.lineWidth = 2; c.strokeStyle = '#a9bfd6'; c.stroke();
-      for (let i=0;i<8;i++){ const ang = (i/8)*Math.PI*2; const x1 = m.x + Math.cos(ang)*m.r; const y1 = m.y + Math.sin(ang)*m.r; const x2 = m.x + Math.cos(ang)*(m.r+6); const y2 = m.y + Math.sin(ang)*(m.r+6); c.beginPath(); c.moveTo(x1,y1); c.lineTo(x2,y2); c.strokeStyle = '#7f93a8'; c.stroke(); }
+    // ─────────────────────────────────────────────────────────────────────────────
+    // FANCY MINES with pulsing red beacon (replaces your // Mines loop)
+    // ─────────────────────────────────────────────────────────────────────────────
+    const nowSec = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) * 0.001;
+
+    for (const m of mines) {
+      c.save();
+
+      // sphere shading
+      const rg = c.createRadialGradient(m.x - m.r * 0.4, m.y - m.r * 0.4, m.r * 0.2, m.x, m.y, m.r * 1.1);
+      rg.addColorStop(0.00, '#596579');  // highlight
+      rg.addColorStop(0.55, '#2a3747');  // mid
+      rg.addColorStop(1.00, '#151c24');  // shadow
+
+      c.beginPath();
+      c.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+      c.fillStyle = rg;
+      c.fill();
+
+      // rim highlight
+      c.lineWidth = 2;
+      c.strokeStyle = 'rgba(220,235,255,0.25)';
+      c.stroke();
+
+      // panel seam (equator)
+      c.beginPath();
+      c.arc(m.x, m.y, m.r * 0.78, 0, Math.PI * 2);
+      c.strokeStyle = 'rgba(180,200,220,0.25)';
+      c.lineWidth = 1.5;
+      c.stroke();
+
+      // rivets around seam
+      const rivets = 14;
+      for (let i = 0; i < rivets; i++) {
+        const ang = (i / rivets) * Math.PI * 2;
+        const rx = m.x + Math.cos(ang) * m.r * 0.78;
+        const ry = m.y + Math.sin(ang) * m.r * 0.78;
+        c.beginPath();
+        c.arc(rx, ry, Math.max(1.5, m.r * 0.06), 0, Math.PI * 2);
+        c.fillStyle = '#a9bfd6';
+        c.fill();
+        c.lineWidth = 1;
+        c.strokeStyle = '#5c6d80';
+        c.stroke();
+      }
+
+      // spikes with caps
+      const spikes = 10;
+      for (let i = 0; i < spikes; i++) {
+        const ang = (i / spikes) * Math.PI * 2;
+        const baseR = m.r * 0.65;
+        const tipR  = m.r * 1.18;
+        const bx = m.x + Math.cos(ang) * baseR;
+        const by = m.y + Math.sin(ang) * baseR;
+        const tx = m.x + Math.cos(ang) * tipR;
+        const ty = m.y + Math.sin(ang) * tipR;
+
+        // spike shaft
+        c.beginPath();
+        c.moveTo(bx, by);
+        c.lineTo(tx, ty);
+        c.lineWidth = Math.max(2, m.r * 0.10);
+        c.strokeStyle = '#7f93a8';
+        c.stroke();
+
+        // cap
+        c.beginPath();
+        c.arc(tx, ty, Math.max(2, m.r * 0.12), 0, Math.PI * 2);
+        c.fillStyle = '#c8d6e6';
+        c.fill();
+        c.lineWidth = 1.5;
+        c.strokeStyle = '#6e8298';
+        c.stroke();
+      }
+
+      // pulsing red beacon in center
+      const phase = nowSec * 6 + (m.x + m.y) * 0.03; // slight desync per mine
+      const pulse = 0.5 + 0.5 * Math.sin(phase);     // 0..1
+      const coreR = Math.max(2, m.r * 0.12);
+      const glowR = coreR + m.r * (0.18 + 0.18 * pulse);
+      const cx = m.x, cy = m.y;
+
+      // glow
+      c.save();
+      c.globalCompositeOperation = 'lighter';
+      c.beginPath();
+      c.arc(cx, cy, glowR, 0, Math.PI * 2);
+      c.fillStyle = `rgba(255,0,0,${0.18 + 0.35 * pulse})`;
+      c.shadowColor = 'rgba(255,0,0,1)';
+      c.shadowBlur = 8 + 16 * pulse;
+      c.fill();
+
+      // bright core
+      c.beginPath();
+      c.arc(cx, cy, coreR, 0, Math.PI * 2);
+      c.fillStyle = '#ff2b2b';
+      c.shadowBlur = 0;
+      c.fill();
+
+      // glossy highlight on core
+      c.beginPath();
+      c.ellipse(cx - coreR * 0.25, cy - coreR * 0.25, coreR * 0.55, coreR * 0.35, Math.PI / 8, 0, Math.PI * 2);
+      c.fillStyle = 'rgba(255,255,255,0.6)';
+      c.fill();
+      c.restore();
+
+      c.restore();
     }
 
     // Explosions (simple expanding rings)
