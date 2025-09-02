@@ -282,15 +282,93 @@
       c.strokeStyle = `rgba(255,180,80,${0.8*(1-p)})`; c.lineWidth = 2; c.stroke();
     }
 
-    // Boat
+    // Boat (Qatari-style dhow, top-down)
     c.save();
-    c.translate(boat.x, boat.y); c.rotate(boat.ang);
-    // Hull
-    c.fillStyle = '#69aadb';
-    c.beginPath(); c.ellipse(0,0, boat.r+6, boat.r, 0, 0, Math.PI*2); c.fill();
-    c.lineWidth = 2; c.strokeStyle = '#e1f1ff'; c.stroke();
-    // Bow
-    c.beginPath(); c.moveTo(boat.r+6,0); c.lineTo(boat.r-2, -6); c.lineTo(boat.r-2, 6); c.closePath(); c.fillStyle = '#3f87bd'; c.fill();
+    c.translate(boat.x, boat.y);
+    c.rotate(boat.ang);
+
+    // proportions (tweak to taste)
+    const L = boat.r * 2.6;   // half-length
+    const B = boat.r * 0.9;   // half-beam
+
+    // soft shadow for depth
+    c.shadowColor = 'rgba(0,0,0,0.25)';
+    c.shadowBlur = 12;
+    c.shadowOffsetY = 2;
+
+    // wood gradient
+    const wood = c.createLinearGradient(-L, 0, L, 0);
+    wood.addColorStop(0.00, '#8a5a3b');
+    wood.addColorStop(0.45, '#a06b47');
+    wood.addColorStop(0.55, '#b77b4f');
+    wood.addColorStop(1.00, '#8a5a3b');
+
+    // hull outline (teardrop w/ flatter stern)
+    c.beginPath();
+    c.moveTo(-L * 0.85, -B * 0.60);                        // stern, port
+    c.quadraticCurveTo(-L * 0.20, -B * 1.10,  L * 0.92, 0); // sheer to bow point
+    c.quadraticCurveTo(-L * 0.20,  B * 1.10, -L * 0.85,  B * 0.60); // back along starboard
+    c.quadraticCurveTo(-L * 0.97,  0,        -L * 0.85, -B * 0.60); // roundish stern
+    c.closePath();
+    c.fillStyle = wood;
+    c.fill();
+
+    c.lineWidth = 2;
+    c.strokeStyle = '#3a2418';
+    c.stroke();
+
+    // thin gunwale highlight
+    c.lineWidth = 1;
+    c.strokeStyle = 'rgba(255,255,255,0.25)';
+    c.stroke();
+
+    // dark prow cap (distinctive dhow bow)
+    c.beginPath();
+    c.moveTo( L * 0.92, 0);
+    c.lineTo( L * 0.68, -B * 0.34);
+    c.lineTo( L * 0.68,  B * 0.34);
+    c.closePath();
+    c.fillStyle = '#6d4630';
+    c.fill();
+
+    // deck planking (subtle arcs)
+    c.lineWidth = 1;
+    for (let t = -B * 0.75; t <= B * 0.75; t += B / 6) {
+      c.beginPath();
+      c.moveTo(-L * 0.72, t);
+      c.quadraticCurveTo(0, t * 1.25, L * 0.72, t);
+      c.strokeStyle = 'rgba(255,255,255,0.06)';
+      c.stroke();
+    }
+
+    // centerline
+    c.beginPath();
+    c.moveTo(-L * 0.70, 0);
+    c.quadraticCurveTo(0, 0, L * 0.70, 0);
+    c.strokeStyle = 'rgba(0,0,0,0.12)';
+    c.stroke();
+
+    // mast (forward of center) + lateen spar hint
+    const mastX = L * 0.25;
+    c.fillStyle = '#5a3b29';
+    c.beginPath(); c.arc(mastX, 0, Math.max(2, boat.r * 0.12), 0, Math.PI * 2); c.fill();
+    c.lineWidth = 2;
+    c.strokeStyle = 'rgba(0,0,0,0.25)';
+    c.beginPath();
+    c.moveTo(mastX, 0);
+    c.lineTo(-L * 0.30, -B * 0.35); // angled spar/boom hint
+    c.stroke();
+
+    // small deckhouse aft
+    c.fillStyle = '#6f4a32';
+    const dhx = -L * 0.45, dhw = L * 0.28, dhh = B * 0.36;
+    c.fillRect(dhx - dhw/2, -dhh/2, dhw, dhh);
+
+    // light rim on deckhouse
+    c.strokeStyle = 'rgba(255,255,255,0.12)';
+    c.lineWidth = 1;
+    c.strokeRect(dhx - dhw/2, -dhh/2, dhw, dhh);
+
     c.restore();
 
     if (!running){
